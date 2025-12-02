@@ -1,0 +1,223 @@
+---
+title: "final project stuff"
+author: "Patrick Cruz, 706144329"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(pROC)
+```
+
+```{r}
+# 1. Load useful packages
+
+# 2. Read in your data (make sure the file is in your working directory)
+df <- read.csv("aluminum_coldRoll_train.csv")
+
+# 3. Quick look at the structure
+glimpse(df)
+
+# 4. (If you have an ID column) drop it
+df <- df %>% select(-ID)   # comment this out if there's no ID
+
+# 5. Make the response a factor (replace with your actual response column name)
+# Example if your response column is y_passXtremeDurability:
+df <- df %>%
+  mutate(
+    y_passXtremeDurability = factor(
+      y_passXtremeDurability,
+      levels = c(0, 1),
+      labels = c("failure", "success")
+    )
+  )
+
+# 6. Check class balance
+df %>%
+  count(y_passXtremeDurability) %>%
+  mutate(prop = n / sum(n))
+
+```
+```{r}
+model <- glm(y_passXtremeDurability ~ ., data = df, family = binomial)
+summary(model)
+```
+```{r}
+set.seed(123)
+set.seed(123)
+
+## ---- 1. READ DATA ----
+
+train_df <- read.csv("aluminum_coldRoll_train.csv")
+test_df  <- read.csv("aluminum_coldRoll_testNoY.csv")
+
+# Keep ID separately for later
+test_ids <- test_df$ID
+
+# Drop ID from both before modeling
+train_df <- train_df %>% select(-ID)
+test_df  <- test_df  %>% select(-ID)
+
+## ---- 2. MAKE OUTCOME A FACTOR ----
+
+train_df <- train_df %>%
+  mutate(
+    y_passXtremeDurability = factor(
+      y_passXtremeDurability,
+      levels = c(0, 1),
+      labels = c("failure", "success")
+    )
+  )
+
+# (Optional) quick class balance check
+train_df %>%
+  count(y_passXtremeDurability) %>%
+  mutate(prop = n / sum(n))
+```
+```{r}
+## ---- 3. CROSS-VALIDATED LOGISTIC REGRESSION ----
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+set.seed(123)
+logit_cv <- train(
+  y_passXtremeDurability ~ .,   # use all remaining columns as predictors
+  data = train_df,
+  method = "glm",
+  family = binomial,
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+logit_cv   # prints mean ROC, etc. across folds
+
+```
+
+```{r}
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+set.seed(123)
+logit_cv <- train(
+  y_passXtremeDurability ~ .,          # all predictors from this dataset
+  data = train_df,
+  method = "glm",
+  family = binomial,
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+logit_cv    # prints mean ROC, etc.
+
+```
+
+
+```{r}
+## EDA: simple plots
+
+# Numeric features vs outcome (boxplots)
+num_vars <- c("firstPassRollPressure",
+              "secondPassRollPressure",
+              "contourDefNdx",
+              "clearPassNdx")
+
+for (v in num_vars) {
+  print(
+    ggplot(df, aes(x = y_passXtremeDurability, y = .data[[v]])) +
+      geom_boxplot() +
+      labs(title = paste(v, "by outcome"),
+           x = "Outcome",
+           y = v)
+  )
+}
+
+# Categorical features vs outcome (success rate)
+cat_vars <- c("alloy", "cutTemp", "rollTemp",
+              "topEdgeMicroChipping", "blockSource", "machineRestart")
+
+for (v in cat_vars) {
+  tmp <- df %>%
+    group_by(.data[[v]]) %>%
+    summarise(success_rate = mean(y_passXtremeDurability == "success"),
+              n = n(), .groups = "drop")
+  
+  print(
+    ggplot(tmp, aes(x = .data[[v]], y = success_rate)) +
+      geom_col() +
+      coord_flip() +
+      labs(title = paste("Success rate by", v),
+           x = v,
+           y = "Success rate")
+  )
+}
+
+```
+
+```{r}
+## Inspect CV performance
+
+logit_cv        # prints resampling results (ROC, Sens, Spec)
+
+# Best ROC across tuning parameters (for glm it's just one)
+logit_cv$results
+
+# Cross-validated ROC curve using pROC
+cv_roc <- roc(
+  response = logit_cv$pred$obs,
+  predictor = logit_cv$pred$success,
+  levels = c("failure", "success")
+)
+
+auc(cv_roc)
+
+plot(cv_roc, main = paste("CV ROC curve, AUC =", round(auc(cv_roc), 3)))
+
+```
+
+```{r}
+## Predict on Kaggle test set and create submission file
+
+# Predicted probability of "success" on test data
+test_probs <- predict(logit_cv, newdata = test_df, type = "prob")[, "success"]
+
+# Make sure probabilities are strictly within (0, 1)
+eps <- 1e-6
+test_probs <- pmin(pmax(test_probs, eps), 1 - eps)
+
+submission <- data.frame(
+  ID = test_ids,
+  y_passXtremeDurability = test_probs
+)
+
+head(submission)
+
+write.csv(submission, "GROUP7_SUBMISSION1", row.names = FALSE)
+
+```
+```{r}
+# Deviance residuals vs fitted probabilities
+df_diag <- data.frame(
+  fitted = fitted(model),
+  resid  = residuals(model)
+)
+
+ggplot(df_diag, aes(x = fitted, y = resid)) +
+  geom_point(alpha = 0.1) +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(title = "Deviance residuals vs fitted values")
+
+```
+
